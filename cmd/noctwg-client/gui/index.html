@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NoctWG - VPN Client</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="app">
+        <!-- Sidebar -->
+        <nav class="sidebar">
+            <div class="logo">
+                <div class="logo-icon">🌙</div>
+                <span>NoctWG</span>
+            </div>
+            <ul class="nav-menu">
+                <li class="nav-item active" data-page="dashboard">
+                    <span class="nav-icon">📊</span>
+                    <span>Dashboard</span>
+                </li>
+                <li class="nav-item" data-page="connection">
+                    <span class="nav-icon">🔌</span>
+                    <span>Connection</span>
+                </li>
+                <li class="nav-item" data-page="rpft">
+                    <span class="nav-icon">🔀</span>
+                    <span>Port Forwarding</span>
+                </li>
+                <li class="nav-item" data-page="settings">
+                    <span class="nav-icon">⚙️</span>
+                    <span>Settings</span>
+                </li>
+                <li class="nav-item" data-page="logs">
+                    <span class="nav-icon">📋</span>
+                    <span>Logs</span>
+                </li>
+            </ul>
+            <div class="sidebar-footer">
+                <div class="version">v0.1.0</div>
+            </div>
+        </nav>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Dashboard Page -->
+            <section class="page active" id="page-dashboard">
+                <header class="page-header">
+                    <h1>Dashboard</h1>
+                    <div class="connection-status" id="connection-status">
+                        <span class="status-dot disconnected"></span>
+                        <span>Disconnected</span>
+                    </div>
+                </header>
+
+                <div class="dashboard-grid">
+                    <!-- Connection Card -->
+                    <div class="card connection-card">
+                        <div class="card-header">
+                            <h2>VPN Connection</h2>
+                        </div>
+                        <div class="card-body">
+                            <div class="connection-visual">
+                                <div class="connection-orb" id="connection-orb">
+                                    <div class="orb-inner"></div>
+                                    <div class="orb-pulse"></div>
+                                </div>
+                            </div>
+                            <button class="btn btn-primary btn-large" id="toggle-connection">
+                                Connect
+                            </button>
+                            <div class="connection-info" id="connection-info">
+                                <p>Server: <span id="server-addr">Not configured</span></p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Stats Card -->
+                    <div class="card stats-card">
+                        <div class="card-header">
+                            <h2>Statistics</h2>
+                        </div>
+                        <div class="card-body">
+                            <div class="stats-grid">
+                                <div class="stat-item">
+                                    <div class="stat-icon upload">↑</div>
+                                    <div class="stat-info">
+                                        <span class="stat-label">Upload</span>
+                                        <span class="stat-value" id="bytes-sent">0 B</span>
+                                    </div>
+                                </div>
+                                <div class="stat-item">
+                                    <div class="stat-icon download">↓</div>
+                                    <div class="stat-info">
+                                        <span class="stat-label">Download</span>
+                                        <span class="stat-value" id="bytes-recv">0 B</span>
+                                    </div>
+                                </div>
+                                <div class="stat-item">
+                                    <div class="stat-icon latency">⏱</div>
+                                    <div class="stat-info">
+                                        <span class="stat-label">Latency</span>
+                                        <span class="stat-value" id="latency">-- ms</span>
+                                    </div>
+                                </div>
+                                <div class="stat-item">
+                                    <div class="stat-icon time">🕐</div>
+                                    <div class="stat-info">
+                                        <span class="stat-label">Connected</span>
+                                        <span class="stat-value" id="connected-time">--:--:--</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Keys Card -->
+                    <div class="card keys-card">
+                        <div class="card-header">
+                            <h2>Your Keys</h2>
+                        </div>
+                        <div class="card-body">
+                            <div class="key-item">
+                                <label>Public Key</label>
+                                <div class="key-value">
+                                    <code id="public-key">Loading...</code>
+                                    <button class="btn btn-icon" onclick="copyToClipboard('public-key')">📋</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- RPFT Quick Status -->
+                    <div class="card rpft-card">
+                        <div class="card-header">
+                            <h2>Port Forwarding</h2>
+                            <a href="#" class="card-link" onclick="navigateTo('rpft')">View All →</a>
+                        </div>
+                        <div class="card-body">
+                            <div class="rpft-summary">
+                                <div class="rpft-stat">
+                                    <span class="rpft-stat-value" id="active-tunnels">0</span>
+                                    <span class="rpft-stat-label">Active Tunnels</span>
+                                </div>
+                                <div class="rpft-stat">
+                                    <span class="rpft-stat-value" id="total-connections">0</span>
+                                    <span class="rpft-stat-label">Connections</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Connection Page -->
+            <section class="page" id="page-connection">
+                <header class="page-header">
+                    <h1>Connection Settings</h1>
+                </header>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h2>Server Configuration</h2>
+                    </div>
+                    <div class="card-body">
+                        <form id="connection-form">
+                            <div class="form-group">
+                                <label for="server-address">Server Address</label>
+                                <input type="text" id="server-address" placeholder="vpn.example.com">
+                            </div>
+                            <div class="form-group">
+                                <label for="server-port">Server Port</label>
+                                <input type="number" id="server-port" value="51820">
+                            </div>
+                            <div class="form-group">
+                                <label for="server-public-key">Server Public Key</label>
+                                <input type="text" id="server-public-key" placeholder="Base64 encoded public key">
+                            </div>
+                            <div class="form-group">
+                                <label for="allowed-ips">Allowed IPs</label>
+                                <input type="text" id="allowed-ips" value="0.0.0.0/0, ::/0">
+                            </div>
+                            <div class="form-group">
+                                <label for="dns-servers">DNS Servers</label>
+                                <input type="text" id="dns-servers" value="1.1.1.1, 8.8.8.8">
+                            </div>
+                            <div class="form-actions">
+                                <button type="submit" class="btn btn-primary">Save Configuration</button>
+                                <button type="button" class="btn btn-secondary" id="test-connection">Test Connection</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h2>Key Management</h2>
+                    </div>
+                    <div class="card-body">
+                        <div class="key-management">
+                            <div class="form-group">
+                                <label>Your Public Key</label>
+                                <div class="key-display">
+                                    <code id="my-public-key">Loading...</code>
+                                    <button class="btn btn-icon" onclick="copyToClipboard('my-public-key')">📋</button>
+                                </div>
+                            </div>
+                            <button class="btn btn-warning" id="generate-new-keys">
+                                Generate New Keys
+                            </button>
+                            <p class="warning-text">⚠️ Generating new keys will require updating the server configuration.</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- RPFT Page -->
+            <section class="page" id="page-rpft">
+                <header class="page-header">
+                    <h1>Reverse Port Forwarding</h1>
+                    <button class="btn btn-primary" id="add-tunnel-btn">
+                        + Add Tunnel
+                    </button>
+                </header>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h2>Active Tunnels</h2>
+                    </div>
+                    <div class="card-body">
+                        <table class="table" id="tunnels-table">
+                            <thead>
+                                <tr>
+                                    <th>Name</th>
+                                    <th>Type</th>
+                                    <th>Protocol</th>
+                                    <th>Local</th>
+                                    <th>Remote</th>
+                                    <th>Status</th>
+                                    <th>Traffic</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="tunnels-body">
+                                <tr class="empty-row">
+                                    <td colspan="8">No tunnels configured. Click "Add Tunnel" to create one.</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Add Tunnel Modal -->
+                <div class="modal" id="add-tunnel-modal">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h2>Add Port Forwarding Tunnel</h2>
+                            <button class="modal-close" onclick="closeModal('add-tunnel-modal')">&times;</button>
+                        </div>
+                        <div class="modal-body">
+                            <form id="add-tunnel-form">
+                                <div class="form-group">
+                                    <label for="tunnel-name">Tunnel Name</label>
+                                    <input type="text" id="tunnel-name" placeholder="My Tunnel" required>
+                                </div>
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label for="tunnel-type">Type</label>
+                                        <select id="tunnel-type">
+                                            <option value="local_to_remote">Local → Remote</option>
+                                            <option value="remote_to_local">Remote → Local</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="tunnel-protocol">Protocol</label>
+                                        <select id="tunnel-protocol">
+                                            <option value="tcp">TCP</option>
+                                            <option value="udp">UDP</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label for="tunnel-local-host">Local Host</label>
+                                        <input type="text" id="tunnel-local-host" value="127.0.0.1">
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="tunnel-local-port">Local Port</label>
+                                        <input type="number" id="tunnel-local-port" required>
+                                    </div>
+                                </div>
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label for="tunnel-remote-host">Remote Host</label>
+                                        <input type="text" id="tunnel-remote-host" value="127.0.0.1">
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="tunnel-remote-port">Remote Port</label>
+                                        <input type="number" id="tunnel-remote-port" required>
+                                    </div>
+                                </div>
+                                <div class="form-actions">
+                                    <button type="button" class="btn btn-secondary" onclick="closeModal('add-tunnel-modal')">Cancel</button>
+                                    <button type="submit" class="btn btn-primary">Create Tunnel</button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Settings Page -->
+            <section class="page" id="page-settings">
+                <header class="page-header">
+                    <h1>Settings</h1>
+                </header>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h2>General Settings</h2>
+                    </div>
+                    <div class="card-body">
+                        <form id="settings-form">
+                            <div class="form-group">
+                                <label class="toggle-label">
+                                    <input type="checkbox" id="auto-connect" checked>
+                                    <span class="toggle-switch"></span>
+                                    Auto-connect on startup
+                                </label>
+                            </div>
+                            <div class="form-group">
+                                <label class="toggle-label">
+                                    <input type="checkbox" id="killswitch">
+                                    <span class="toggle-switch"></span>
+                                    Kill Switch (Block traffic when disconnected)
+                                </label>
+                            </div>
+                            <div class="form-group">
+                                <label for="keepalive">Persistent Keepalive (seconds)</label>
+                                <input type="number" id="keepalive" value="25">
+                            </div>
+                            <div class="form-group">
+                                <label for="log-level">Log Level</label>
+                                <select id="log-level">
+                                    <option value="error">Error</option>
+                                    <option value="info" selected>Info</option>
+                                    <option value="debug">Debug</option>
+                                    <option value="verbose">Verbose</option>
+                                </select>
+                            </div>
+                            <div class="form-actions">
+                                <button type="submit" class="btn btn-primary">Save Settings</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h2>GUI Settings</h2>
+                    </div>
+                    <div class="card-body">
+                        <div class="form-group">
+                            <label for="theme">Theme</label>
+                            <select id="theme" onchange="setTheme(this.value)">
+                                <option value="dark">Dark</option>
+                                <option value="light">Light</option>
+                                <option value="system">System</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h2>About</h2>
+                    </div>
+                    <div class="card-body">
+                        <div class="about-info">
+                            <p><strong>NoctWG</strong> - Nocturnal WireGuard</p>
+                            <p>Version: 0.1.0</p>
+                            <p>A modern VPN protocol with RPFT support.</p>
+                            <p><a href="https://github.com/noctwg/noctwg" target="_blank">GitHub Repository</a></p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Logs Page -->
+            <section class="page" id="page-logs">
+                <header class="page-header">
+                    <h1>Logs</h1>
+                    <div class="page-actions">
+                        <button class="btn btn-secondary" id="clear-logs">Clear</button>
+                        <button class="btn btn-secondary" id="export-logs">Export</button>
+                    </div>
+                </header>
+
+                <div class="card logs-card">
+                    <div class="card-body">
+                        <div class="logs-container" id="logs-container">
+                            <div class="log-entry info">
+                                <span class="log-time">--:--:--</span>
+                                <span class="log-level">INFO</span>
+                                <span class="log-message">NoctWG Client started</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Toast Container -->
+    <div class="toast-container" id="toast-container"></div>
+
+    <script src="app.js"></script>
+</body>
+</html>

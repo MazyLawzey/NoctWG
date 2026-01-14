@@ -1,0 +1,29 @@
+{
+  "server_address": "vpn.example.com",
+  "server_port": 51820,
+  "server_public_key": "",
+  "private_key": "",
+  "tunnel_address": "10.0.0.2/24",
+  "dns": ["1.1.1.1", "8.8.8.8"],
+  "allowed_ips": ["0.0.0.0/0", "::/0"],
+  "persistent_keepalive": 25,
+  "rpft": {
+    "enabled": true,
+    "tunnels": [
+      {
+        "name": "ssh",
+        "type": "local_to_remote",
+        "protocol": "tcp",
+        "local_host": "127.0.0.1",
+        "local_port": 22,
+        "remote_host": "127.0.0.1",
+        "remote_port": 2222
+      }
+    ]
+  },
+  "gui_enabled": true,
+  "gui_address": "127.0.0.1",
+  "gui_port": 8081,
+  "log_level": "info",
+  "log_file": ""
+}

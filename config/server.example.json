@@ -1,0 +1,16 @@
+{
+  "listen_address": "0.0.0.0",
+  "listen_port": 51820,
+  "private_key": "",
+  "peers": [],
+  "rpft": {
+    "enabled": true,
+    "max_tunnels_per_peer": 10,
+    "tunnels": []
+  },
+  "log_level": "info",
+  "log_file": "",
+  "api_enabled": true,
+  "api_address": "127.0.0.1",
+  "api_port": 8080
+}
