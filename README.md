@@ -98,6 +98,3 @@ RPFT allows you to expose local services through the VPN tunnel:
 }
 ```
 
-## License
-
-MIT License
