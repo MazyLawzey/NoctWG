@@ -936,3 +936,42 @@ body {
 ::-webkit-scrollbar-thumb:hover {
     background: var(--text-muted);
 }
+
+/* Connection buttons group */
+.connection-buttons {
+    display: flex;
+    gap: 12px;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+
+.connection-buttons .btn-large {
+    padding: 16px 32px;
+}
+
+.btn-success {
+    background: linear-gradient(135deg, #10b981, #059669);
+    color: white;
+}
+
+.btn-success:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(16, 185, 129, 0.4);
+}
+
+/* TUN status badge */
+.tun-status {
+    margin-top: 12px;
+    text-align: center;
+}
+
+.tun-badge {
+    display: inline-block;
+    padding: 6px 16px;
+    background: rgba(16, 185, 129, 0.15);
+    border: 1px solid rgba(16, 185, 129, 0.3);
+    border-radius: 20px;
+    color: #10b981;
+    font-size: 13px;
+    font-weight: 500;
+}

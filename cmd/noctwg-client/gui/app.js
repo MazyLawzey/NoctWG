@@ -80,6 +80,9 @@ function initForms() {
     // Toggle connection button
     document.getElementById('toggle-connection').addEventListener('click', toggleConnection);
     
+    // Toggle connection with TUN button
+    document.getElementById('toggle-connection-tun').addEventListener('click', toggleConnectionTUN);
+    
     // Test connection button
     document.getElementById('test-connection').addEventListener('click', testConnection);
     
@@ -244,6 +247,59 @@ async function toggleConnection() {
     }
     
     btn.disabled = false;
+    updateStatus();
+}
+
+async function toggleConnectionTUN() {
+    const btn = document.getElementById('toggle-connection-tun');
+    const btnRegular = document.getElementById('toggle-connection');
+    btn.disabled = true;
+    btnRegular.disabled = true;
+    
+    try {
+        if (state.connected) {
+            await apiCall('/api/disconnect', 'POST');
+            showToast('info', 'Disconnected', 'VPN + TUN connection closed.');
+            addLog('info', 'Disconnected from VPN server (TUN)');
+            document.getElementById('tun-status').style.display = 'none';
+        } else {
+            const config = getConnectionConfig();
+            if (!config.server_address || !config.server_public_key) {
+                showToast('warning', 'Configuration Required', 'Please configure server settings first.');
+                navigateTo('connection');
+                btn.disabled = false;
+                btnRegular.disabled = false;
+                return;
+            }
+            
+            // Get TUN address from connection settings or default
+            const tunAddrEl = document.getElementById('tun-address');
+            const tunAddr = tunAddrEl ? tunAddrEl.value : '10.0.0.2/24';
+            
+            config.tun_address = tunAddr;
+            
+            addLog('info', `Connecting with TUN (${tunAddr})...`);
+            showToast('info', 'Connecting...', 'Establishing VPN tunnel with TUN adapter...');
+            
+            const result = await apiCall('/api/connect-tun', 'POST', config);
+            if (result.status === 'connected') {
+                showToast('success', 'Connected with TUN', `VPN tunnel established. TUN: ${result.tun_name || 'active'}`);
+                addLog('info', `Connected to ${config.server_address} with TUN adapter: ${result.tun_name || 'active'}`);
+                
+                // Show TUN status badge
+                document.getElementById('tun-status').style.display = 'block';
+                document.getElementById('tun-name').textContent = result.tun_name || 'active';
+            } else {
+                throw new Error(result.error || 'TUN connection failed');
+            }
+        }
+    } catch (error) {
+        showToast('error', 'TUN Error', error.message);
+        addLog('error', `TUN connection error: ${error.message}`);
+    }
+    
+    btn.disabled = false;
+    btnRegular.disabled = false;
     updateStatus();
 }
 

@@ -34,6 +34,9 @@ type Peer struct {
 	// Current session
 	session atomic.Pointer[Session]
 
+	// Signal channel for session establishment
+	sessionReady chan struct{}
+
 	// Pre-shared key
 	PreSharedKey [crypto.KeySize]byte
 
@@ -44,9 +47,13 @@ type Peer struct {
 	PersistentKeepalive time.Duration
 
 	// Timers
-	lastHandshake time.Time
-	lastReceive   time.Time
-	lastSend      time.Time
+	lastHandshake        time.Time
+	lastReceive          time.Time
+	lastSend             time.Time
+	lastHandshakeAttempt time.Time
+
+	// Cached initiation packet for retry (resend same bytes)
+	lastInitiationData []byte
 
 	// RPFT tunnels for this peer
 	RPFTTunnels []*RPFTTunnel
@@ -230,8 +237,9 @@ func (d *Device) AddPeer(publicKey crypto.PublicKey) (*Peer, error) {
 	}
 
 	peer := &Peer{
-		PublicKey: publicKey,
-		handshake: NewHandshake(d.privateKey, publicKey),
+		PublicKey:    publicKey,
+		handshake:    NewHandshake(d.privateKey, publicKey),
+		sessionReady: make(chan struct{}),
 	}
 
 	d.peers[publicKey] = peer
@@ -272,7 +280,7 @@ func (d *Device) receiveLoop() {
 		default:
 		}
 
-		fmt.Printf("[RECEIVE] Waiting for packets...\n")
+		fmt.Printf("[RECEIVE] Waiting for packets on %s...\n", d.conn.LocalAddr().String())
 		n, addr, err := d.conn.ReadFrom(buf)
 		if err != nil {
 			if d.state.Load() == uint32(DeviceStateClosed) {
@@ -282,7 +290,7 @@ func (d *Device) receiveLoop() {
 			continue
 		}
 
-		fmt.Printf("[RECEIVE] Got %d bytes from %v\n", n, addr)
+		fmt.Printf("[RECEIVE] Got %d bytes from %v (type=%d)\n", n, addr, buf[0])
 
 		if n < 4 {
 			fmt.Printf("[RECEIVE] Packet too short\n")
@@ -398,8 +406,9 @@ func (d *Device) handleInitiation(msg *InboundMessage) {
 	peer, exists := d.peers[handshake.remoteStatic]
 	if !exists {
 		peer = &Peer{
-			PublicKey: handshake.remoteStatic,
-			handshake: handshake,
+			PublicKey:    handshake.remoteStatic,
+			handshake:    handshake,
+			sessionReady: make(chan struct{}),
 		}
 		d.peers[handshake.remoteStatic] = peer
 	} else {
@@ -420,6 +429,7 @@ func (d *Device) handleInitiation(msg *InboundMessage) {
 
 	// Store session
 	peer.session.Store(session)
+	peer.notifySessionReady()
 	d.indexTable.Store(session.localIndex, peer)
 	peer.lastHandshake = time.Now()
 
@@ -483,6 +493,7 @@ func (d *Device) handleResponse(msg *InboundMessage) {
 
 	// Store session
 	peer.session.Store(session)
+	peer.notifySessionReady()
 	d.indexTable.Store(session.localIndex, peer)
 	peer.lastHandshake = time.Now()
 	peer.Endpoint = msg.Endpoint
@@ -530,13 +541,35 @@ func (d *Device) handleTransport(msg *InboundMessage) {
 
 	// Process decrypted packet
 	if len(plaintext) > 0 {
-		// If server has TUN device, write to it
-		if d.tunDevice != nil {
-			d.tunDevice.Write(plaintext)
+		// Log IP version and addresses, learn source IP for return routing
+		if len(plaintext) >= 20 {
+			version := plaintext[0] >> 4
+			if version == 4 {
+				srcIP := net.IP(make([]byte, 4))
+				copy(srcIP, plaintext[12:16])
+				dstIP := net.IP(plaintext[16:20])
+				proto := plaintext[9]
+				fmt.Printf("[TRANSPORT] IPv4 packet: %s -> %s proto=%d len=%d\n", srcIP, dstIP, proto, len(plaintext))
+				// Auto-learn source IP so return traffic finds this peer
+				d.autoLearnAllowedIP(peer, srcIP)
+			} else if version == 6 {
+				fmt.Printf("[TRANSPORT] IPv6 packet (len=%d) — skipping (no IPv6 routing)\n", len(plaintext))
+			}
 		}
 
-		// Also handle ICMP echo requests (ping) locally
-		d.handleICMPEcho(peer, plaintext)
+		// If server has TUN device, write to it (kernel handles routing/NAT/ICMP)
+		if d.tunDevice != nil {
+			n, err := d.tunDevice.Write(plaintext)
+			if err != nil {
+				fmt.Printf("[TRANSPORT] TUN write error: %v\n", err)
+			} else {
+				fmt.Printf("[TRANSPORT] Wrote %d bytes to TUN\n", n)
+			}
+		} else {
+			// No TUN — fall back to built-in ICMP echo responder
+			fmt.Printf("[TRANSPORT] No TUN device — trying ICMP handler\n")
+			d.handleICMPEcho(peer, plaintext)
+		}
 	}
 }
 
@@ -579,6 +612,9 @@ func (d *Device) InitiateHandshake(peer *Peer) error {
 	peer.mutex.Lock()
 	defer peer.mutex.Unlock()
 
+	// Reset session-ready channel so callers can wait on fresh handshake
+	peer.sessionReady = make(chan struct{})
+
 	peer.handshake = NewHandshake(d.privateKey, peer.PublicKey)
 
 	initMsg, err := peer.handshake.CreateInitiation()
@@ -588,6 +624,7 @@ func (d *Device) InitiateHandshake(peer *Peer) error {
 
 	// Store index for response lookup
 	d.indexTable.Store(initMsg.SenderIndex, peer)
+	peer.lastHandshakeAttempt = time.Now()
 
 	// Serialize message
 	data := make([]byte, MessageInitiationSize)
@@ -599,6 +636,10 @@ func (d *Device) InitiateHandshake(peer *Peer) error {
 	copy(data[116:132], initMsg.MAC1[:])
 	copy(data[132:148], initMsg.MAC2[:])
 
+	// Cache for retries
+	peer.lastInitiationData = make([]byte, len(data))
+	copy(peer.lastInitiationData, data)
+
 	d.outbound <- &OutboundMessage{
 		Data:     data,
 		Endpoint: peer.Endpoint,
@@ -606,6 +647,57 @@ func (d *Device) InitiateHandshake(peer *Peer) error {
 	}
 
 	return nil
+}
+
+// resendInitiation resends the cached initiation packet without creating a new handshake.
+// This preserves the handshake state so the server's response to any copy can be consumed.
+func (d *Device) resendInitiation(peer *Peer) {
+	peer.mutex.RLock()
+	data := peer.lastInitiationData
+	endpoint := peer.Endpoint
+	peer.mutex.RUnlock()
+
+	if data == nil {
+		fmt.Printf("[HANDSHAKE] No cached initiation to resend\n")
+		return
+	}
+
+	d.outbound <- &OutboundMessage{
+		Data:     data,
+		Endpoint: endpoint,
+		Peer:     peer,
+	}
+}
+
+// InitiateHandshakeWithRetry starts a handshake with retries until session is
+// established or all attempts are exhausted.  Returns the established session.
+func (d *Device) InitiateHandshakeWithRetry(peer *Peer, attempts int, timeout time.Duration) (*Session, error) {
+	// Create handshake once
+	fmt.Printf("[HANDSHAKE] Starting handshake (%d attempts, %v timeout each)\n", attempts, timeout)
+
+	if err := d.InitiateHandshake(peer); err != nil {
+		return nil, fmt.Errorf("initiate handshake: %w", err)
+	}
+
+	for i := 0; i < attempts; i++ {
+		if i > 0 {
+			// Resend the same packet (same ephemeral key, same SenderIndex)
+			fmt.Printf("[HANDSHAKE] Resending initiation (attempt %d/%d)\n", i+1, attempts)
+			d.resendInitiation(peer)
+		} else {
+			fmt.Printf("[HANDSHAKE] Waiting for response (attempt %d/%d)\n", i+1, attempts)
+		}
+
+		session, err := peer.WaitForSession(timeout)
+		if err == nil && session != nil {
+			fmt.Printf("[HANDSHAKE] Session established on attempt %d\n", i+1)
+			return session, nil
+		}
+
+		fmt.Printf("[HANDSHAKE] Attempt %d/%d timed out\n", i+1, attempts)
+	}
+
+	return nil, fmt.Errorf("handshake failed after %d attempts (no response from server — check firewall/NAT)", attempts)
 }
 
 // Close shuts down the device
@@ -661,6 +753,41 @@ func (p *Peer) AddAllowedIP(cidr string) error {
 // GetSession returns the current session
 func (p *Peer) GetSession() *Session {
 	return p.session.Load()
+}
+
+// WaitForSession waits until a session is established or timeout expires.
+// Returns the session or an error on timeout.
+func (p *Peer) WaitForSession(timeout time.Duration) (*Session, error) {
+	// Check if session already exists
+	if s := p.session.Load(); s != nil {
+		return s, nil
+	}
+
+	select {
+	case <-p.sessionReady:
+		s := p.session.Load()
+		if s != nil {
+			return s, nil
+		}
+		return nil, errors.New("session signaled but not available")
+	case <-time.After(timeout):
+		// One last check
+		if s := p.session.Load(); s != nil {
+			return s, nil
+		}
+		return nil, errors.New("handshake timeout: no session established")
+	}
+}
+
+// notifySessionReady signals that a session has been established.
+// Safe to call multiple times.
+func (p *Peer) notifySessionReady() {
+	select {
+	case <-p.sessionReady:
+		// Already closed / signaled — nothing to do
+	default:
+		close(p.sessionReady)
+	}
 }
 
 // SetTUN sets the TUN device for the VPN
@@ -733,7 +860,22 @@ func (d *Device) tunReadLoop() {
 		// Encrypt and send
 		session := peer.session.Load()
 		if session == nil {
-			fmt.Printf("[TUN] No session for peer\n")
+			// No session yet — trigger handshake if we haven't recently
+			peer.mutex.RLock()
+			timeSinceLast := time.Since(peer.lastHandshakeAttempt)
+			peer.mutex.RUnlock()
+
+			if timeSinceLast > 5*time.Second {
+				fmt.Printf("[TUN] No session for peer, initiating handshake...\n")
+				go func() {
+					if err := d.InitiateHandshake(peer); err != nil {
+						fmt.Printf("[TUN] Handshake initiation failed: %v\n", err)
+					}
+				}()
+			} else {
+				fmt.Printf("[TUN] No session for peer, handshake already in progress (%.1fs ago)\n",
+					timeSinceLast.Seconds())
+			}
 			continue
 		}
 
@@ -782,6 +924,7 @@ func (d *Device) findPeerByDestIP(packet []byte) *Peer {
 	d.peersMux.RLock()
 	defer d.peersMux.RUnlock()
 
+	// First try matching by AllowedIPs
 	for _, peer := range d.peers {
 		for _, allowedIP := range peer.AllowedIPs {
 			if allowedIP.Contains(destIP) {
@@ -790,7 +933,45 @@ func (d *Device) findPeerByDestIP(packet []byte) *Peer {
 		}
 	}
 
+	// Fallback: if there's only one peer, use it (common for client mode)
+	if len(d.peers) == 1 {
+		for _, peer := range d.peers {
+			fmt.Printf("[TUN] Using only available peer for dest %s\n", destIP)
+			return peer
+		}
+	}
+
+	fmt.Printf("[TUN] No peer found for dest IP %s (peers=%d)\n", destIP, len(d.peers))
 	return nil
+}
+
+// autoLearnAllowedIP automatically adds source IP/32 to peer's AllowedIPs
+// This enables return traffic routing for dynamically created peers
+func (d *Device) autoLearnAllowedIP(peer *Peer, srcIP net.IP) {
+	// Check if already known
+	peer.mutex.RLock()
+	for _, aip := range peer.AllowedIPs {
+		if aip.Contains(srcIP) {
+			peer.mutex.RUnlock()
+			return
+		}
+	}
+	peer.mutex.RUnlock()
+
+	// Add /32 for IPv4, /128 for IPv6
+	ones := 32
+	if srcIP.To4() == nil {
+		ones = 128
+	}
+
+	cidr := fmt.Sprintf("%s/%d", srcIP.String(), ones)
+	peer.mutex.Lock()
+	_, ipnet, err := net.ParseCIDR(cidr)
+	if err == nil {
+		peer.AllowedIPs = append(peer.AllowedIPs, *ipnet)
+		fmt.Printf("[TRANSPORT] Auto-learned AllowedIP %s for peer\n", cidr)
+	}
+	peer.mutex.Unlock()
 }
 
 // handleICMPEcho responds to ICMP echo requests (ping)

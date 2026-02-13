@@ -1,4 +1,4 @@
-# NoctWG - Noct WireGuard
+# NoctWG - Nocturnal WireGuard
 
 A modern VPN protocol with Reverse Port Forwarding Tunnel (RPFT) support.
 
@@ -98,3 +98,6 @@ RPFT allows you to expose local services through the VPN tunnel:
 }
 ```
 
+## License
+
+MIT License
