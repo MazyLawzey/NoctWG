@@ -1,5 +1,5 @@
 # NoctWG - Nocturnal WireGuard
-
+<img width="1240" height="600" alt="SplashScreen scale-200" src="https://github.com/user-attachments/assets/c9726b86-0859-47d3-aa85-70881e903256" />
 A modern VPN protocol with Reverse Port Forwarding Tunnel (RPFT) support.
 
 ## Features
