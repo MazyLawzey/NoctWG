@@ -1,6 +1,6 @@
 //go:build linux
 
-/* SPDX-License-Identifier: MIT
+/* SPDX-License-Identifier: GPL-3.0
  *
  * Copyright (C) 2025 NoctWG. All Rights Reserved.
  */
@@ -44,8 +44,9 @@ type ifReq struct {
 
 // createPlatformTUN creates a Linux TUN device
 func createPlatformTUN(config *Config) (Device, error) {
-	// Open /dev/net/tun
-	fd, err := os.OpenFile(tunDevice, os.O_RDWR, 0)
+	// Open /dev/net/tun using raw syscall to get a proper pollable fd.
+	// os.OpenFile causes issues with Go's internal poller ("not pollable").
+	nfd, err := syscall.Open(tunDevice, syscall.O_RDWR|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open %s: %w (hint: run as root or check permissions)", tunDevice, err)
 	}
@@ -63,13 +64,26 @@ func createPlatformTUN(config *Config) (Device, error) {
 	// TUNSETIFF ioctl
 	_, _, errno := syscall.Syscall(
 		syscall.SYS_IOCTL,
-		fd.Fd(),
+		uintptr(nfd),
 		uintptr(0x400454ca), // TUNSETIFF
 		uintptr(unsafe.Pointer(&req)),
 	)
 	if errno != 0 {
-		fd.Close()
+		syscall.Close(nfd)
 		return nil, fmt.Errorf("TUNSETIFF failed: %v", errno)
+	}
+
+	// Set non-blocking so Go's netpoller (epoll) can manage it
+	if err := syscall.SetNonblock(nfd, true); err != nil {
+		syscall.Close(nfd)
+		return nil, fmt.Errorf("SetNonblock failed: %w", err)
+	}
+
+	// Wrap in os.File — Go runtime will register it with epoll
+	fd := os.NewFile(uintptr(nfd), tunDevice)
+	if fd == nil {
+		syscall.Close(nfd)
+		return nil, fmt.Errorf("os.NewFile returned nil")
 	}
 
 	// Get actual interface name

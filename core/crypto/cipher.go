@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT
+/* SPDX-License-Identifier: GPL-3.0
  *
  * Copyright (C) 2025 NoctWG. All Rights Reserved.
  */
@@ -58,6 +58,16 @@ func (a *AEAD) Seal(nonce, plaintext, additionalData []byte) []byte {
 	return a.cipher.Seal(nil, nonce, plaintext, additionalData)
 }
 
+// SealTo encrypts plaintext and appends the result to dst, avoiding extra allocations
+func (a *AEAD) SealTo(dst, nonce, plaintext, additionalData []byte) []byte {
+	return a.cipher.Seal(dst, nonce, plaintext, additionalData)
+}
+
+// Overhead returns the maximum difference between plaintext and ciphertext lengths
+func (a *AEAD) Overhead() int {
+	return a.cipher.Overhead()
+}
+
 // Open decrypts and verifies ciphertext with associated data
 func (a *AEAD) Open(nonce, ciphertext, additionalData []byte) ([]byte, error) {
 	return a.cipher.Open(nil, nonce, ciphertext, additionalData)
@@ -66,11 +76,6 @@ func (a *AEAD) Open(nonce, ciphertext, additionalData []byte) ([]byte, error) {
 // NonceSize returns the nonce size for this AEAD
 func (a *AEAD) NonceSize() int {
 	return a.cipher.NonceSize()
-}
-
-// Overhead returns the maximum difference between plaintext and ciphertext lengths
-func (a *AEAD) Overhead() int {
-	return a.cipher.Overhead()
 }
 
 // Hash computes BLAKE2s-256 hash

@@ -67,9 +67,17 @@
                                     <div class="orb-pulse"></div>
                                 </div>
                             </div>
-                            <button class="btn btn-primary btn-large" id="toggle-connection">
-                                Connect
-                            </button>
+                            <div class="connection-buttons">
+                                <button class="btn btn-primary btn-large" id="toggle-connection">
+                                    Connect
+                                </button>
+                                <button class="btn btn-success btn-large" id="toggle-connection-tun">
+                                    🛡️ Connect with TUN
+                                </button>
+                            </div>
+                            <div class="tun-status" id="tun-status" style="display:none;">
+                                <span class="tun-badge">🛡️ TUN: <span id="tun-name">--</span></span>
+                            </div>
                             <div class="connection-info" id="connection-info">
                                 <p>Server: <span id="server-addr">Not configured</span></p>
                             </div>
@@ -176,6 +184,10 @@
                             <div class="form-group">
                                 <label for="server-public-key">Server Public Key</label>
                                 <input type="text" id="server-public-key" placeholder="Base64 encoded public key">
+                            </div>
+                            <div class="form-group">
+                                <label for="tun-address">TUN Address (CIDR)</label>
+                                <input type="text" id="tun-address" value="10.0.0.2/24" placeholder="10.0.0.2/24">
                             </div>
                             <div class="form-group">
                                 <label for="allowed-ips">Allowed IPs</label>

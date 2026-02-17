@@ -1,7 +1,3 @@
-/* SPDX-License-Identifier: MIT
- *
- * Copyright (C) 2025 NoctWG. All Rights Reserved.
- */
 
 package protocol
 
@@ -11,11 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/blake2s"
 
-	"github.com/noctwg/noctwg/core/crypto"
+	"github.com/MazyLawzey/noctwg/core/crypto"
 )
 
 // Noise Protocol construction identifier
@@ -88,8 +85,6 @@ type Handshake struct {
 
 // Session represents an established crypto session
 type Session struct {
-	mutex sync.RWMutex
-
 	// Local and remote indices
 	localIndex  uint32
 	remoteIndex uint32
@@ -98,18 +93,22 @@ type Session struct {
 	sendKey    []byte
 	receiveKey []byte
 
-	// Nonce counters
-	sendNonce    uint64
-	receiveNonce uint64
+	// Cached AEAD ciphers — created once, reused for every packet
+	// ChaCha20-Poly1305 is safe for concurrent use
+	sendAEAD    *crypto.AEAD
+	receiveAEAD *crypto.AEAD
 
-	// Replay protection
+	// Nonce counter — atomic, no mutex needed
+	sendNonce atomic.Uint64
+
+	// Replay protection (has its own mutex)
 	replayFilter ReplayFilter
 
 	// Session creation time
 	created time.Time
 
 	// Is this session valid?
-	valid bool
+	valid atomic.Bool
 }
 
 // ReplayFilter provides replay attack protection
@@ -535,14 +534,25 @@ func (h *Handshake) CreateResponse() (*MessageResponse, *Session, error) {
 		return nil, nil, err
 	}
 
+	sendAEAD, err := crypto.NewAEAD(outputs[0])
+	if err != nil {
+		return nil, nil, err
+	}
+	receiveAEAD, err := crypto.NewAEAD(outputs[1])
+	if err != nil {
+		return nil, nil, err
+	}
+
 	session := &Session{
 		localIndex:  h.localIndex,
 		remoteIndex: h.remoteIndex,
 		sendKey:     outputs[0],
 		receiveKey:  outputs[1],
+		sendAEAD:    sendAEAD,
+		receiveAEAD: receiveAEAD,
 		created:     time.Now(),
-		valid:       true,
 	}
+	session.valid.Store(true)
 
 	h.state = HandshakeResponseCreated
 	h.lastResponse = time.Now()
@@ -627,14 +637,25 @@ func (h *Handshake) ConsumeResponse(msg *MessageResponse) (*Session, error) {
 		return nil, err
 	}
 
+	sendAEAD, err := crypto.NewAEAD(outputs[1])
+	if err != nil {
+		return nil, err
+	}
+	receiveAEAD, err := crypto.NewAEAD(outputs[0])
+	if err != nil {
+		return nil, err
+	}
+
 	session := &Session{
 		localIndex:  h.localIndex,
 		remoteIndex: h.remoteIndex,
 		sendKey:     outputs[1], // Note: reversed from server
 		receiveKey:  outputs[0],
+		sendAEAD:    sendAEAD,
+		receiveAEAD: receiveAEAD,
 		created:     time.Now(),
-		valid:       true,
 	}
+	session.valid.Store(true)
 
 	h.state = HandshakeResponseConsumed
 
@@ -654,39 +675,32 @@ func createTimestamp() []byte {
 	return tai64n
 }
 
-// Encrypt encrypts data for transport
+// Encrypt encrypts data for transport — lock-free, safe for concurrent use
 func (s *Session) Encrypt(plaintext []byte) ([]byte, error) {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
-	if !s.valid {
+	if !s.valid.Load() {
 		return nil, errors.New("session not valid")
 	}
 
-	aead, err := crypto.NewAEAD(s.sendKey)
-	if err != nil {
-		return nil, err
-	}
+	// Atomic increment — each goroutine gets unique counter
+	counter := s.sendNonce.Add(1) - 1
 
-	nonce := make([]byte, 12)
-	binary.LittleEndian.PutUint64(nonce[4:], s.sendNonce)
-	s.sendNonce++
+	// Stack-allocated nonce
+	var nonce [12]byte
+	binary.LittleEndian.PutUint64(nonce[4:], counter)
 
-	header := make([]byte, MessageTransportHeaderSize)
-	header[0] = MessageTypeTransport
-	binary.LittleEndian.PutUint32(header[4:], s.remoteIndex)
-	binary.LittleEndian.PutUint64(header[8:], s.sendNonce-1)
+	// Build output: header + ciphertext in one allocation
+	out := make([]byte, MessageTransportHeaderSize, MessageTransportHeaderSize+len(plaintext)+s.sendAEAD.Overhead())
+	out[0] = MessageTypeTransport
+	binary.LittleEndian.PutUint32(out[4:], s.remoteIndex)
+	binary.LittleEndian.PutUint64(out[8:], counter)
 
-	ciphertext := aead.Seal(nonce, plaintext, nil)
-	return append(header, ciphertext...), nil
+	out = s.sendAEAD.SealTo(out, nonce[:], plaintext, nil)
+	return out, nil
 }
 
-// Decrypt decrypts data from transport
+// Decrypt decrypts data from transport — lock-free, safe for concurrent use
 func (s *Session) Decrypt(data []byte) ([]byte, error) {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
-	if !s.valid {
+	if !s.valid.Load() {
 		return nil, errors.New("session not valid")
 	}
 
@@ -696,20 +710,16 @@ func (s *Session) Decrypt(data []byte) ([]byte, error) {
 
 	counter := binary.LittleEndian.Uint64(data[8:16])
 
-	// Replay protection
+	// Replay protection (has its own mutex)
 	if !s.replayFilter.ValidateCounter(counter) {
 		return nil, errors.New("replay detected")
 	}
 
-	aead, err := crypto.NewAEAD(s.receiveKey)
-	if err != nil {
-		return nil, err
-	}
-
-	nonce := make([]byte, 12)
+	// Stack-allocated nonce
+	var nonce [12]byte
 	binary.LittleEndian.PutUint64(nonce[4:], counter)
 
-	plaintext, err := aead.Open(nonce, data[MessageTransportHeaderSize:], nil)
+	plaintext, err := s.receiveAEAD.Open(nonce[:], data[MessageTransportHeaderSize:], nil)
 	if err != nil {
 		return nil, err
 	}
@@ -755,14 +765,10 @@ func (rf *ReplayFilter) ValidateCounter(counter uint64) bool {
 
 // IsValid returns whether the session is valid
 func (s *Session) IsValid() bool {
-	s.mutex.RLock()
-	defer s.mutex.RUnlock()
-	return s.valid
+	return s.valid.Load()
 }
 
 // Invalidate marks the session as invalid
 func (s *Session) Invalidate() {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-	s.valid = false
+	s.valid.Store(false)
 }

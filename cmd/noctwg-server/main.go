@@ -1,7 +1,3 @@
-/* SPDX-License-Identifier: MIT
- *
- * Copyright (C) 2025 NoctWG. All Rights Reserved.
- */
 
 package main
 
@@ -10,17 +6,21 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
 
-	noctwg "github.com/noctwg/noctwg"
-	"github.com/noctwg/noctwg/config"
-	"github.com/noctwg/noctwg/core/crypto"
-	"github.com/noctwg/noctwg/core/protocol"
-	"github.com/noctwg/noctwg/rpft"
+	noctwg "github.com/MazyLawzey/noctwg"
+	"github.com/MazyLawzey/noctwg/config"
+	"github.com/MazyLawzey/noctwg/core/crypto"
+	"github.com/MazyLawzey/noctwg/core/protocol"
+	"github.com/MazyLawzey/noctwg/rpft"
+	"github.com/MazyLawzey/noctwg/tun"
 )
 
 var (
@@ -31,6 +31,8 @@ var (
 	apiPort        = flag.Int("api-port", 8080, "API port")
 	enableAPI      = flag.Bool("api", true, "Enable management API")
 	privateKeyFlag = flag.String("private-key", "", "Server private key (base64)")
+	enableTUN      = flag.Bool("tun", true, "Enable TUN device for VPN routing")
+	tunAddress     = flag.String("tun-address", "10.0.0.1/24", "TUN interface address (CIDR)")
 )
 
 // Server represents the NoctWG server
@@ -39,6 +41,7 @@ type Server struct {
 	device    *protocol.Device
 	logger    *ServerLogger
 	apiServer *http.Server
+	tunDevice tun.Device
 }
 
 // ServerLogger implements the Logger interface
@@ -133,9 +136,22 @@ func main() {
 	}
 
 	log.Printf("NoctWG Server %s started on port %d", noctwg.Version, cfg.ListenPort)
+	log.Printf("========================================")
 	log.Printf("Server Public Key: %s", server.device.GetPublicKey().ToBase64())
+	log.Printf("========================================")
+	log.Printf("^^^ Use this key as server-key on clients ^^^")
 	if cfg.APIEnabled {
 		log.Printf("API available at http://%s:%d", cfg.APIAddress, cfg.APIPort)
+	}
+
+	// Setup TUN device for VPN routing
+	if *enableTUN && runtime.GOOS == "linux" {
+		if err := server.setupTUN(*tunAddress); err != nil {
+			log.Printf("WARNING: Failed to setup TUN: %v", err)
+			log.Printf("VPN routing will NOT work. Run as root or fix the error above.")
+		} else {
+			log.Printf("TUN device active — VPN routing enabled")
+		}
 	}
 
 	// Wait for signal
@@ -218,7 +234,183 @@ func (s *Server) Stop() {
 	if s.apiServer != nil {
 		s.apiServer.Close()
 	}
+	if s.tunDevice != nil {
+		s.tunDevice.Close()
+	}
 	s.device.Close()
+}
+
+// setupTUN creates TUN device, enables IP forwarding and NAT
+func (s *Server) setupTUN(tunAddr string) error {
+	log.Printf("[TUN] Setting up TUN device with address %s", tunAddr)
+
+	// Parse CIDR
+	ip, ipNet, err := net.ParseCIDR(tunAddr)
+	if err != nil {
+		return fmt.Errorf("invalid TUN address %q: %w", tunAddr, err)
+	}
+
+	// Create TUN device
+	tunCfg := &tun.Config{
+		Name:    "noctwg0",
+		MTU:     1420,
+		Address: ip,
+		Netmask: ipNet.Mask,
+	}
+
+	tunDev, err := tun.CreateTUN(tunCfg)
+	if err != nil {
+		return fmt.Errorf("failed to create TUN device: %w", err)
+	}
+	log.Printf("[TUN] Created TUN device: %s", tunDev.Name())
+	s.tunDevice = tunDev
+
+	// Configure IP address
+	if err := tunDev.Configure(ip, ipNet.Mask); err != nil {
+		return fmt.Errorf("failed to configure TUN IP: %w", err)
+	}
+	log.Printf("[TUN] Configured IP: %s", tunAddr)
+
+	// Bring interface up
+	if err := tunDev.Up(); err != nil {
+		return fmt.Errorf("failed to bring TUN up: %w", err)
+	}
+	log.Printf("[TUN] Interface %s is UP", tunDev.Name())
+
+	// Attach TUN to protocol device
+	s.device.SetTUN(tunDev, tunDev.Name())
+
+	// Start TUN read loop (TUN → encrypt → send to peer)
+	if err := s.device.StartTUNLoop(); err != nil {
+		return fmt.Errorf("failed to start TUN loop: %w", err)
+	}
+	log.Printf("[TUN] TUN read loop started")
+
+	// Enable IP forwarding
+	if err := enableIPForwarding(); err != nil {
+		log.Printf("[TUN] WARNING: Failed to enable IP forwarding: %v", err)
+		log.Printf("[TUN] Run manually: sysctl -w net.ipv4.ip_forward=1")
+	} else {
+		log.Printf("[TUN] IP forwarding enabled")
+	}
+
+	// Relax reverse path filtering (common issue for tunneled traffic)
+	if err := disableRPFilter(); err != nil {
+		log.Printf("[TUN] WARNING: Failed to disable rp_filter: %v", err)
+		log.Printf("[TUN] Run manually: sysctl -w net.ipv4.conf.all.rp_filter=0 net.ipv4.conf.default.rp_filter=0")
+	} else {
+		log.Printf("[TUN] rp_filter disabled")
+	}
+
+	// Setup NAT (MASQUERADE)
+	if err := setupNAT(tunDev.Name()); err != nil {
+		log.Printf("[TUN] WARNING: Failed to setup NAT: %v", err)
+		log.Printf("[TUN] Run manually: iptables -t nat -A POSTROUTING -s 10.0.0.0/24 -o eth0 -j MASQUERADE")
+	} else {
+		log.Printf("[TUN] NAT/MASQUERADE configured")
+	}
+
+	return nil
+}
+
+// enableIPForwarding enables IPv4 forwarding on Linux
+func enableIPForwarding() error {
+	// Try sysctl
+	cmd := exec.Command("sysctl", "-w", "net.ipv4.ip_forward=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		// Fallback: write directly
+		err2 := os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1"), 0644)
+		if err2 != nil {
+			return fmt.Errorf("sysctl: %v, direct write: %v", err, err2)
+		}
+	} else {
+		log.Printf("[TUN] sysctl: %s", strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// disableRPFilter disables reverse path filtering for tunnel compatibility
+func disableRPFilter() error {
+	cmd := exec.Command("sysctl", "-w",
+		"net.ipv4.conf.all.rp_filter=0",
+		"net.ipv4.conf.default.rp_filter=0")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("sysctl rp_filter: %v: %s", err, out)
+	}
+	log.Printf("[TUN] sysctl: %s", strings.TrimSpace(string(out)))
+	return nil
+}
+
+// setupNAT configures iptables MASQUERADE for VPN subnet
+func setupNAT(tunName string) error {
+	// Detect the default outgoing interface
+	outIface := detectDefaultInterface()
+	log.Printf("[TUN] Detected outgoing interface: %s", outIface)
+
+	// Add MASQUERADE rule (idempotent: check first)
+	checkCmd := exec.Command("iptables", "-t", "nat", "-C", "POSTROUTING",
+		"-s", "10.0.0.0/24", "-o", outIface, "-j", "MASQUERADE")
+	if checkCmd.Run() != nil {
+		// Rule doesn't exist, add it
+		addCmd := exec.Command("iptables", "-t", "nat", "-I", "POSTROUTING", "1",
+			"-s", "10.0.0.0/24", "-o", outIface, "-j", "MASQUERADE")
+		out, err := addCmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("iptables MASQUERADE: %v: %s", err, out)
+		}
+		log.Printf("[TUN] Added MASQUERADE rule for 10.0.0.0/24 via %s", outIface)
+	}
+
+	// Allow forwarding from TUN (insert at top to avoid being shadowed by DROP/ufw rules)
+	checkFwd := exec.Command("iptables", "-C", "FORWARD",
+		"-i", tunName, "-o", outIface, "-j", "ACCEPT")
+	if checkFwd.Run() != nil {
+		addFwd := exec.Command("iptables", "-I", "FORWARD", "1",
+			"-i", tunName, "-o", outIface, "-j", "ACCEPT")
+		out, err := addFwd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("iptables FORWARD out: %v: %s", err, out)
+		}
+		log.Printf("[TUN] Added FORWARD rule: %s -> %s ACCEPT", tunName, outIface)
+	}
+
+	// Allow related/established back
+	checkBack := exec.Command("iptables", "-C", "FORWARD",
+		"-i", outIface, "-o", tunName, "-m", "state",
+		"--state", "RELATED,ESTABLISHED", "-j", "ACCEPT")
+	if checkBack.Run() != nil {
+		addBack := exec.Command("iptables", "-I", "FORWARD", "1",
+			"-i", outIface, "-o", tunName, "-m", "state",
+			"--state", "RELATED,ESTABLISHED", "-j", "ACCEPT")
+		out, err := addBack.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("iptables FORWARD in: %v: %s", err, out)
+		}
+		log.Printf("[TUN] Added FORWARD rule: %s -> %s RELATED,ESTABLISHED ACCEPT", outIface, tunName)
+	}
+
+	return nil
+}
+
+// detectDefaultInterface finds the default outgoing network interface
+func detectDefaultInterface() string {
+	cmd := exec.Command("ip", "route", "show", "default")
+	out, err := cmd.Output()
+	if err != nil {
+		return "eth0" // fallback
+	}
+
+	// Parse: "default via 1.2.3.4 dev eth0 ..."
+	fields := strings.Fields(string(out))
+	for i, f := range fields {
+		if f == "dev" && i+1 < len(fields) {
+			return fields[i+1]
+		}
+	}
+
+	return "eth0"
 }
 
 // startAPI starts the management API

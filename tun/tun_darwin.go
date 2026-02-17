@@ -1,6 +1,6 @@
 //go:build darwin
 
-/* SPDX-License-Identifier: MIT
+/* SPDX-License-Identifier: GPL-3.0
  *
  * Copyright (C) 2025 NoctWG. All Rights Reserved.
  */

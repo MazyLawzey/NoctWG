@@ -1,7 +1,4 @@
-/* SPDX-License-Identifier: MIT
- *
- * Copyright (C) 2025 NoctWG. All Rights Reserved.
- */
+
 
 package protocol
 
@@ -9,7 +6,7 @@ import (
 	"encoding/binary"
 	"sync"
 
-	"github.com/noctwg/noctwg/rpft"
+	"github.com/MazyLawzey/noctwg/rpft"
 )
 
 // RPFTHandler handles RPFT messages within the VPN protocol
